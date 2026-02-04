@@ -1,35 +1,26 @@
-def COLOR_MAP = [
-    'FAILURE' : 'danger',
-    'SUCCESS' : 'good'
-]
-
 pipeline {
-
     agent any
-
-	tools {
-        maven "maven3"
-	    jdk "OracleJDK8"
+    
+    tools{
+        maven 'Maven'
+        jdk "OracleJDK8"
     }
-
-     environment {
-        NEXUS_USER = 'admin'
-        NEXUS_PASSWORD = 'admin'
-        SNAP_REPO = 'vprofile-snapshot'
-        RELEASE_REPO = 'vprofile-release'
-        CENTRAL_REPO = 'vprofile-central-repo'
-        NEXUS_GRP_REPO = 'vprofile-grp-repo'
-        NEXUS_IP = '192.168.33.20'
-        NEXUS_PORT = '8081'
-        NEXUS_LOGIN = "nexuslogin"
-        SONARSERVER = 'sonarserver'
-        SONARSCANNER = 'sonarscanner'
+    
+    environment {
+        SCANNER_HOME = tool 'Sonar'
     }
 
     stages {
-        stage('Build'){
+        
+        stage('Git Checkout') {
             steps {
-                sh 'mvn -s settings.xml -DskipTests install'
+                git branch: 'main', url: 'https://github.com/MrHassni/iProfileProject.git'
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'mvn clean install -DskipTests'
             }
             post {
                 success {
@@ -38,64 +29,67 @@ pipeline {
                 }
             }
         }
-
-        // stage('Test'){
-        //     steps {
-        //         sh 'mvn -s settings.xml test'
-        //     }
-
-        // }
-
-        // stage('Checkstyle Analysis'){
-        //     steps {
-        //         sh 'mvn -s settings.xml checkstyle:checkstyle'
-        //     }
-        // }
-
-        stage('Sonar Analysis') {
-            environment {
-                scannerHome = tool "${SONARSCANNER}"
-            }
+        
+        stage('Apply Unit Test') {
             steps {
-               withSonarQubeEnv("${SONARSERVER}") {
-                   sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
-                   -Dsonar.projectName=vprofile \
-                   -Dsonar.projectVersion=1.0 \
-                   -Dsonar.sources=src/ \
-                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
-                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
+                sh 'mvn test'
+            }
+        }
+        
+        stage('Gitleaks Scan') {
+    steps {
+        sh '''
+            gitleaks detect --source . -r gitleaks-report.json --exit-code 1 || true
+            if [ -s gitleaks-report.json ]; then
+                echo "--- GITLEAKS SEARCH RESULTS ---"
+                cat gitleaks-report.json
+            else
+                echo "No leaks found or report is empty."
+            fi
+        '''
+        archiveArtifacts artifacts: 'gitleaks-report.json', allowEmptyArchive: true
+            }
+        }
+
+        
+        stage('SonarQube Analysis') {
+            steps {
+                  withSonarQubeEnv('Sonar') {
+                   sh """
+                   
+                    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+                       export PATH=\$JAVA_HOME/bin:\$PATH
+                   
+                       ${SCANNER_HOME}/bin/sonar-scanner \
+                       -Dsonar.host.url=http://127.0.0.1:9000 \
+                       -Dsonar.projectKey=iprofile \
+                       -Dsonar.sources=src/ \
+                       -Dsonar.java.binaries=target/classes
+                   """
+                    }
+                }
+        }
+        
+        stage('Quality Gate Check') {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'SonarToken'
                 }
             }
         }
-
-        stage("Upload Artifact"){
+        
+        stage('Artifact Upload') {
             steps{
-                nexusArtifactUploader(
-                  nexusVersion: 'nexus3',
-                  protocol: 'http',
-                  nexusUrl: "${NEXUS_IP}:${NEXUS_PORT}",
-                  groupId: 'Dev',
-                  version: "${env.BUILD_ID}-${env.BUILD_TIMESTAMP}",
-                  repository: "${RELEASE_REPO}",
-                  credentialsId: "${NEXUS_LOGIN}",
-                  artifacts: [
-                    [artifactId: 'vproapp',
-                     classifier: '',
-                     file: 'target/vprofile-v2.war',
-                     type: 'war']
-                  ]
-                )
+                nexusArtifactUploader artifacts: [[artifactId: 'vproapp', classifier: '', file: 'target/iprofile-v4.war', type: 'war']],
+                credentialsId: 'NexusLoginCreds',
+                groupId: 'com.visualpathit',
+                nexusUrl: '127.0.0.1:8081',
+                nexusVersion: 'nexus3',
+                protocol: 'http',
+                repository: 'iprofile',
+                version: 'v4'
             }
         }
-    }
-        post {
-        always {
-            echo 'Slack Notifications.'
-            slackSend channel: '#cicd-pipeline',
-                color: COLOR_MAP[currentBuild.currentResult],
-                message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
-        }
+        
     }
 }
