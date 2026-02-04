@@ -71,6 +71,12 @@ pipeline {
                 }
             }
         }
+
+          stage('Trivy FS Scan') {
+            steps {
+                sh 'trivy fs --format table -o fs-report.html .'
+            }
+        }
         
         stage('Artifact Upload') {
             steps{
