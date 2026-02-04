@@ -12,12 +12,6 @@ pipeline {
 
     stages {
         
-        stage('Git Checkout') {
-            steps {
-                git branch: 'main', url: 'https://github.com/MrHassni/iProfileProject.git'
-            }
-        }
-        
         stage('Build') {
             steps {
                 sh 'mvn clean install -DskipTests'
